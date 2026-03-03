@@ -12,6 +12,7 @@ env/
 
 # Claude Code internals
 .claude/
+CLAUDE.md
 
 # Papers (copyright)
 Papers/
