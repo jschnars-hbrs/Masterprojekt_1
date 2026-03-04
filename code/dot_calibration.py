@@ -182,6 +182,25 @@ class DotCalibration:
     # Blob detection
     # ─────────────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def add_gaussian_to_detected_blob(image: np.ndarray, blobs: np.ndarray) -> np.ndarray:
+        """Add a synthetic 2-D Gaussian at each blob location to create Gaussian intensity profiles."""
+        GAUSS_SIGMA = 2   # fixed narrow sigma in pixels
+        GAUSS_R     = 4     # half-window size in pixels
+        out = image.astype(np.float64).copy()
+        H, W = out.shape[:2]
+        for blob in blobs:
+            y, x = blob[0], blob[1]
+            y0, y1 = max(0, int(y) - GAUSS_R), min(H, int(y) + GAUSS_R + 1)
+            x0, x1 = max(0, int(x) - GAUSS_R), min(W, int(x) + GAUSS_R + 1)
+            yy, xx = np.mgrid[y0:y1, x0:x1]
+            gauss = np.exp(-0.5 * ((yy - y) ** 2 + (xx - x) ** 2) / GAUSS_SIGMA ** 2)
+            vy = int(np.clip(round(y), 0, H - 1))
+            vx = int(np.clip(round(x), 0, W - 1))
+            peak = float(image[vy, vx])
+            out[y0:y1, x0:x1] += peak * gauss
+        return out
+
     def detect_blobs(self, image_path: str, max_sigma: int = 30, num_sigma: int = 10,
                      threshold: float = 0.1, visualize: bool = False) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -190,7 +209,7 @@ class DotCalibration:
         Returns
         -------
         blobs : (N, 3) array of (y, x, radius)
-        image : grayscale image array
+        image : grayscale image array with synthetic Gaussians added at each blob
         """
         image = self.read_image(image_path)
         if image is None or image.size == 0:
@@ -198,15 +217,16 @@ class DotCalibration:
 
         blobs = feature.blob_log(image, max_sigma=max_sigma, num_sigma=num_sigma, threshold=threshold)
         blobs[:, 2] = blobs[:, 2] * (2 ** 0.5)  # convert sigma to radius
+        image_out = self.add_gaussian_to_detected_blob(image, blobs)
 
         if visualize:
             fig, ax = plt.subplots()
-            ax.imshow(image, cmap="gray")
+            ax.imshow(image_out, cmap="gray")
             for y, x, r in blobs:
                 ax.add_patch(plt.Circle((x, y), r, color="red", linewidth=1, fill=False))
             plt.show()
 
-        return blobs, image
+        return blobs, image_out
 
     # ─────────────────────────────────────────────────────────────────────────
     # Subpixel localisation
@@ -613,6 +633,8 @@ class DotCalibration:
         if Z_tof <= 1e-9 or Z_tri <= 1e-9:
             return np.inf
         return abs(1.0 / Z_tof - 1.0 / Z_tri)
+    
+
 
     @staticmethod
     def build_calibration_trails(subpixel_list: List[List[dict]],
