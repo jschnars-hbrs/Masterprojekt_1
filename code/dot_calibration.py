@@ -409,9 +409,9 @@ class DotCalibration:
         U_tx : (n_dots, n_dist, 3) U shifted into approximate transmitter space
         """
         if K is None:
-            K = np.array([[483.0, 0.0, 320.0],
-                          [0.0,  483.0, 240.0],
-                          [0.0,   0.0,   1.0]])
+            K = np.array([[362.6,    0.0, 320.0],
+                          [  0.0, -362.6, 240.0],
+                          [  0.0,    0.0,   1.0]])
 
         n_dots = len(subpixel_list[0])
         n_dist = len(subpixel_list)
