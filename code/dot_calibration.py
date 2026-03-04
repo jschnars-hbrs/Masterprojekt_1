@@ -232,8 +232,15 @@ class DotCalibration:
     # Subpixel localisation
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _gpr_peak(self, patch: np.ndarray) -> Tuple[float, float]:
-        """GPR-based subpixel peak within *patch*. Returns (x, y) relative to patch."""
+    def _gpr_peak(self, patch: np.ndarray, oversample: int = 10) -> Tuple[float, float]:
+        """GPR-based subpixel peak within *patch*. Returns (x, y) relative to patch.
+
+        Parameters
+        ----------
+        oversample : int
+            Grid oversampling factor for sub-pixel resolution (e.g. 10 → 0.1 px).
+            Higher values are more accurate but slower.
+        """
         h, w = patch.shape
         xx, yy = np.meshgrid(np.arange(w), np.arange(h))
         X = np.column_stack([xx.ravel(), yy.ravel()])
@@ -242,9 +249,16 @@ class DotCalibration:
         kernel = 1.0 * RBF(length_scale=20.0) + WhiteKernel(noise_level=0.1)
         gp = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=0, normalize_y=True)
         gp.fit(X, y)
-        y_mean = gp.predict(X)
-        idx = int(np.argmax(y_mean))
-        return float(X[idx, 0]), float(X[idx, 1])
+
+        # Evaluate on fine sub-pixel grid
+        xx_f, yy_f = np.meshgrid(
+            np.linspace(0, w - 1, w * oversample),
+            np.linspace(0, h - 1, h * oversample)
+        )
+        X_fine = np.column_stack([xx_f.ravel(), yy_f.ravel()])
+        y_fine = gp.predict(X_fine)
+        idx = int(np.argmax(y_fine))
+        return float(X_fine[idx, 0]), float(X_fine[idx, 1])
 
     def _radial_symmetry_center(self, patch: np.ndarray, eps: float = 1e-9) -> Tuple[float, float]:
         """Radial-symmetry subpixel centre. Returns (x, y) relative to patch."""

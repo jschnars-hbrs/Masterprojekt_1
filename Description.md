@@ -141,33 +141,6 @@ Implemented as a second approach. The ML fusion combines the ToF and SL depth es
 
 ---
 
-## What Is Planned
-
-### Active Brightness Trail (Microsoft-Paper Paper)
-
-The next major implementation step is the **Active Brightness Trail** approach from the Microsoft-Paper paper. Instead of running 2D LoG detection in the test image, each calibrated dot's precomputed 1D trail is resampled from the active brightness image and the depth image simultaneously. Candidate depths are the positions of detected peaks along the brightness trail. The candidate with minimum consistency error ε is selected as the final depth.
-
-This approach offers two key advantages over the current pipeline:
-1. **Robustness**: No 2D blob detection; detection runs along a constrained 1D path, making it robust to scene texture and low SNR
-2. **MPI detection**: Multiple brightness peaks along a single trail directly indicate multi-path contamination (light from a second surface is also visible along the dot's epipolar path)
-
-### Real Hardware Test Setup
-
-After full algorithmic validation in simulation, a physical prototype will be built. This involves:
-- A near-infrared dot projector (VCSEL or laser + DOE)
-- A ToF camera with synchronized active brightness readout
-- Mechanical mounting to achieve a stable, measurable baseline AB
-- Real-world calibration with the implemented dot calibration procedure
-- Evaluation of MPI reduction performance on real corner, concave, and translucent-material scenes
-
-### Further Planned Work
-
-- **Quantitative MPI benchmark**: Compare fusion results against ToF-only and SL-only depth maps on scenes specifically designed to trigger MPI (corners, retroreflectors, translucent objects)
-- **Subsurface diffusion robustness**: Validate that the triangulation-based depth is immune to diffusion errors (as shown in the Microsoft-Paper paper for wax/skin targets)
-- **Dynamic recalibration**: Investigate whether AB can be tracked over time using the consistency error itself, compensating for mechanical drift in the real setup
-
----
-
 ## Repository Structure
 
 ```
