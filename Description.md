@@ -68,7 +68,7 @@ The key metric for fusing both modalities at runtime is the **consistency error*
 This is the absolute disagreement between the iToF depth and the triangulated SL depth, expressed in 1/Z space (which is proportional to image-space disparity along the epipolar line). A small ε indicates both sensors agree — the measurement is reliable and MPI-free. A large ε indicates a discrepancy, typically caused by MPI in the iToF measurement.
 
 **Active Brightness Trail** *(planned for implementation)*:
-The "dot trail" is the precomputed 1D path a projected dot traces across the image as target distance varies (from ~30 cm to infinity). At runtime, the active brightness image (the iToF signal amplitude) is resampled along this 1D trail instead of using 2D blob detection. This dramatically improves robustness at low SNR and in textured scenes, and also allows detection of MPI-inducing scene structures by identifying multiple brightness peaks along the trail.
+The "dot trail" is the precomputed 1D path a projected dot traces across the image as target distance varies (from ~30 cm to infinity). At runtime, the active brightness image is resampled along this 1D trail instead of using 2D blob detection. This dramatically improves robustness at low SNR and in textured scenes, and also allows detection of MPI-inducing scene structures by identifying multiple brightness peaks along the trail.
 
 ### Paper 2 — "Combination of Spatially-Modulated ToF and Structured Light for MPI-Free Depth Estimation" (Agresti & Zanuttigh, ECCV 2018)
 
@@ -145,7 +145,7 @@ Implemented as a second approach. The ML fusion combines the ToF and SL depth es
 
 ### Active Brightness Trail (Microsoft-Paper Paper)
 
-The next major implementation step is the **Active Brightness Trail** approach from the Microsoft-Paper paper. Instead of running 2D LoG detection in the test image, each calibrated dot's precomputed 1D trail is resampled from the active brightness image (iToF intensity) and the depth image simultaneously. Candidate depths are the positions of detected peaks along the brightness trail. The candidate with minimum consistency error ε is selected as the final depth.
+The next major implementation step is the **Active Brightness Trail** approach from the Microsoft-Paper paper. Instead of running 2D LoG detection in the test image, each calibrated dot's precomputed 1D trail is resampled from the active brightness image and the depth image simultaneously. Candidate depths are the positions of detected peaks along the brightness trail. The candidate with minimum consistency error ε is selected as the final depth.
 
 This approach offers two key advantages over the current pipeline:
 1. **Robustness**: No 2D blob detection; detection runs along a constrained 1D path, making it robust to scene texture and low SNR
