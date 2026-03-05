@@ -27,3 +27,6 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Description for now on
+Description.md
