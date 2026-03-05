@@ -41,10 +41,11 @@ This approach is based on the second referenced paper.
 
 The steps are as follows:
 1. Locate the dots in the dot pattern, using LoG-Blob-Detection (Laplacian of Gaussian)
-2. Find the subpixel peak of the rough estimate blob (With -> Centroid, Center or GPR (Gaussian Process Regression))
-3. Compute Triangulation for the subpixel locations
-4. For Triangulation and iToF Measurements, compute Maximum-Likelihood-Function -> The probability of the measured distance is a Gaussian ($\sigma$ for ToF is lower than for SL -> ToF is generally more accurate)
-5. Find the argmax of the combined Maximum-Likelihood-Functions and return the depth, found by argmax
+2. Validate the dot via NN-search with the calibration trails.
+3. Find the subpixel peak of the rough estimate blob (With -> Centroid, Center or GPR (Gaussian Process Regression))
+4. Compute Triangulation for the subpixel locations
+5. For Triangulation and iToF Measurements, compute Maximum-Likelihood-Function -> The probability of the measured distance is a Gaussian ($\sigma$ for ToF is lower than for SL -> ToF is generally more accurate)
+6. Find the argmax of the combined Maximum-Likelihood-Functions and return the depth, found by argmax
 
 
 <h3>Approach 3</h3>
