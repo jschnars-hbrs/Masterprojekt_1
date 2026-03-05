@@ -19,7 +19,7 @@ will stay in python.
 The Structured-Light-System and the iToF-System have been simulated via [PBRT](https://github.com/mmp/pbrt-v4).
 Since PBRT does not offer iToF-Simulation as a native feature, it has been implemented by our working group. I am using this implementation for 
 simulating.
-In the next 1-2 months it is planned, to build an experimental setup, with a DOE + VCSEL as a Structured Light projector, combined with an iToF-Camera.
+In the next 1-2 months it is planned, to build a real experimental setup, with a DOE + VCSEL as a Structured Light projector, combined with an iToF-Camera.
 
 <h2> Approaches: Combining SL + iToF</h2>
 
