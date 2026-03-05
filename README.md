@@ -23,7 +23,7 @@ In the next 1-2 months it is planned, to build a real experimental setup, with a
 
 <h2> Approaches: Combining SL + iToF</h2>
 
-Currently, there are 3 different approaches implemented, how SL + iToF is being combined:
+Currently, there are 3 different approaches implemented, how SL + iToF are being combined:
 
 <h3>Approach 1</h3>
 
