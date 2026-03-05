@@ -12,7 +12,7 @@ The codebase is mainly based on two papers:
 <h2>Programming Language</h2>
 
 The code is fully written in Python. If the runtime gets too high, it may be rewritten in a more performant language, but for the foreseeable future, it
-will stay in python. 
+will stay in Python. 
 
 <h2>Simulation</h2>
 
@@ -43,7 +43,7 @@ The steps are as follows:
 1. Locate the dots in the dot pattern, using LoG-Blob-Detection (Laplacian of Gaussian)
 2. Find the subpixel peak of the rough estimate blob (With -> Centroid, Center or GPR (Gaussian Process Regression))
 3. Compute Triangulation for the subpixel locations
-4. For Triangulation and iToF Measurments, compute Maximum-Likelihood-Function -> The probability of the measured distance is a Gaussian ($\sigma$ for ToF is lower than for SL -> ToF is generally more accurate)
+4. For Triangulation and iToF Measurements, compute Maximum-Likelihood-Function -> The probability of the measured distance is a Gaussian ($\sigma$ for ToF is lower than for SL -> ToF is generally more accurate)
 5. Find the argmax of the combined Maximum-Likelihood-Functions and return the depth, found by argmax
 
 
@@ -52,7 +52,7 @@ The steps are as follows:
 This approach is based on the first referenced paper and aims to mitigate MPI effects.
 
 The steps are as follows:
-1. Place epipolar lines through the dot trails (in a 10x10 pattern, there a 10 rows, so 10 epipolar lines / trails)
+1. Place epipolar lines through the dot trails (in a 10x10 pattern, there are 10 rows, so 10 epipolar lines / trails)
 2. Find Peaks in the Brightness of the picture
 3. Evaluate every Peak and find lowest $\epsilon = | \frac{1}{Z_{ToF}} - \frac{1}{Z_{SL}}|$, with the help of iToF
 4. Find subsample location using a 1D quadratic fit
