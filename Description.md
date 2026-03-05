@@ -67,8 +67,12 @@ The key metric for fusing both modalities at runtime is the **consistency error*
 
 This is the absolute disagreement between the iToF depth and the triangulated SL depth, expressed in 1/Z space (which is proportional to image-space disparity along the epipolar line). A small ε indicates both sensors agree — the measurement is reliable and MPI-free. A large ε indicates a discrepancy, typically caused by MPI in the iToF measurement.
 
-**Active Brightness Trail** *(planned for implementation)*:
-The "dot trail" is the precomputed 1D path a projected dot traces across the image as target distance varies (from ~30 cm to infinity). At runtime, the active brightness image is resampled along this 1D trail instead of using 2D blob detection. This dramatically improves robustness at low SNR and in textured scenes, and also allows detection of MPI-inducing scene structures by identifying multiple brightness peaks along the trail.
+**Active Brightness Trail (Dot Trail Approach):**
+The "dot trail" is the precomputed 1D path a projected dot traces across the image as target distance varies (from ~30 cm to infinity). At runtime, the active brightness (SL intensity) image is resampled along this trail for each dot. Because a trail may cross other dots' positions in the image, **multiple brightness peaks** can appear along the trail. These peaks are detected and used as candidate dot locations, restricting the search space.
+
+The best candidate is selected by computing the consistency error ε = |1/Z_ToF − 1/Z_tri| at each detected peak and choosing the one with **minimum ε**. Once the best candidate sample is identified, **subpixel refinement** is applied — either a locally fitted quadratic in 1D along the trail, or Gaussian Process Regression in the 2D image. The paper uses the local quadratic approach.
+
+This replaces 2D blob detection (LoG) at runtime, improving robustness at low SNR and in textured scenes. The paper also describes an efficient raster-scan implementation where a per-dot accumulator tracks the best candidate during a single pass over the image, avoiding explicit resampling.
 
 ### Paper 2 — "Combination of Spatially-Modulated ToF and Structured Light for MPI-Free Depth Estimation" (Agresti & Zanuttigh, ECCV 2018)
 
@@ -138,6 +142,18 @@ At test time, the detected dot positions in the test SL image are matched agains
 ### 4. Fusion Approach 2 — Maximum Likelihood Fusion (Agresti Paper)
 
 Implemented as a second approach. The ML fusion combines the ToF and SL depth estimates with weights derived from the per-pixel noise variance of each modality. The spatially-weighted mixture-of-Gaussians likelihood is maximized over a restricted candidate set (within 3σ of both estimates), producing a fused depth value per dot that is statistically optimal under the assumed noise model.
+
+### 5. Fusion Approach 3 — Active Brightness Trail (Microsoft-Paper Paper)
+
+Implemented as a third approach. For each detected test dot:
+1. The dot is assigned to its nearest calibration trail via KD-tree matching
+2. The 10 epipolar rows corresponding to the 10 grid rows of the calibration dot pattern are derived from the calibration trails
+3. Brightness peaks are detected along the epipolar row using `scipy.signal.find_peaks`
+4. At each peak, the triangulated depth Z_tri and ToF depth Z_tof are computed, and the consistency error ε = |1/Z_ToF − 1/Z_tri| is evaluated
+5. The peak with minimum ε is selected; quadratic sub-sample refinement provides subpixel column accuracy
+6. The output depth is the triangulated depth at the refined peak position
+
+Optional quality gates (SNR threshold, ε threshold) can reject unreliable measurements.
 
 ---
 
