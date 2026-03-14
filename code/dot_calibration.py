@@ -246,7 +246,8 @@ class DotCalibration:
         X = np.column_stack([xx.ravel(), yy.ravel()])
         y = patch.ravel().astype(float)
 
-        kernel = 1.0 * RBF(length_scale=20.0) + WhiteKernel(noise_level=0.1)
+        ls = max(h, w) / 3.0  # adaptive: scale with patch size
+        kernel = 1.0 * RBF(length_scale=ls) + WhiteKernel(noise_level=0.1)
         gp = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=0, normalize_y=True)
         gp.fit(X, y)
 
@@ -455,14 +456,19 @@ class DotCalibration:
                 v_ij = dot["y"]
 
                 if tof_mode.lower() == "pcd":
-                    u_int, v_int = int(round(u_ij)), int(round(v_ij))
-                    if not (0 <= u_int < W and 0 <= v_int < H):
+                    u0, v0 = int(np.floor(u_ij)), int(np.floor(v_ij))
+                    u1, v1 = min(u0 + 1, W - 1), min(v0 + 1, H - 1)
+                    if not (0 <= u0 < W and 0 <= v0 < H):
                         continue
-                    d_check = depth_map[v_int, u_int]
-                    if not (np.isfinite(d_check) and d_check > 1e-6):
-                        continue
-                    P = points_map[v_int, u_int, :]
+                    du, dv = u_ij - u0, v_ij - v0
+                    P = ((1 - du) * (1 - dv) * points_map[v0, u0, :]
+                         + du * (1 - dv) * points_map[v0, u1, :]
+                         + (1 - du) * dv * points_map[v1, u0, :]
+                         + du * dv * points_map[v1, u1, :])
                     if not np.all(np.isfinite(P)):
+                        continue
+                    d_check = np.linalg.norm(P)
+                    if d_check <= 1e-6:
                         continue
                     U[i, j, :] = P
 
@@ -582,7 +588,7 @@ class DotCalibration:
 
         def _v_residuals(params, Q):
             v = self.angles_to_unit_vector(params[0], params[1])
-            return np.concatenate([np.cross(q, v) for q in Q])
+            return np.concatenate([np.cross(q, v) / (np.linalg.norm(q) + 1e-12) for q in Q])
 
         def _fit_unit_vector(Q):
             m = np.mean(Q, axis=0)
