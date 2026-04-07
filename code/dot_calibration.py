@@ -3,6 +3,8 @@ import re
 import numpy as np
 os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
 import cv2
+import OpenEXR
+import Imath
 from skimage import feature
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, WhiteKernel
@@ -21,6 +23,8 @@ class DotCalibration:
       - Godbaz et al. 2025 (Microsoft-Paper): dot calibration, consistency error, active brightness trail
       - Agresti & Zanuttigh, ECCV 2018: maximum likelihood depth fusion
     """
+
+    SL_CHANNEL = "S0.940,000nm"  # EXR channel to use for structured-light images
 
     # ─────────────────────────────────────────────────────────────────────────
     # File utilities
@@ -54,14 +58,25 @@ class DotCalibration:
         return image_paths
 
     def read_image(self, image_path: str) -> np.ndarray:
-        """Read an image (EXR or PNG) and return it as a grayscale array."""
+        """Read an image (EXR or PNG) and return it as a grayscale array.
+
+        For EXR files, reads the channel named SL_CHANNEL by name via the OpenEXR
+        library (avoids OpenCV's unreliable mapping of non-standard channel names).
+        For all other formats, converts to grayscale via OpenCV.
+        """
         if not os.path.exists(image_path):
             raise FileNotFoundError(f"Image not found: {image_path}")
+        if str(image_path).lower().endswith(".exr"):
+            exr = OpenEXR.InputFile(str(image_path))
+            dw = exr.header()['dataWindow']
+            w = dw.max.x - dw.min.x + 1
+            h = dw.max.y - dw.min.y + 1
+            raw = exr.channel(self.SL_CHANNEL, Imath.PixelType(Imath.PixelType.FLOAT))
+            return np.frombuffer(raw, dtype=np.float32).reshape(h, w)
         img = cv2.imread(image_path, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
         if img is None:
             raise ValueError(f"Could not load image: {image_path}")
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        return img
+        return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
     # ─────────────────────────────────────────────────────────────────────────
     # ToF data loading
@@ -201,8 +216,8 @@ class DotCalibration:
             out[y0:y1, x0:x1] += peak * gauss
         return out
 
-    def detect_blobs(self, image_path: str, max_sigma: int = 30, num_sigma: int = 10,
-                     threshold: float = 0.1, visualize: bool = False) -> Tuple[np.ndarray, np.ndarray]:
+    def detect_blobs(self, image_path: str, max_sigma: int = 30, num_sigma: int = 10, min_sigma: int = 5,
+                     threshold: float = 0.1, visualize: bool = False, add_synthetic_gaussian: bool = False) -> Tuple[np.ndarray, np.ndarray]:
         """
         Laplacian-of-Gaussian blob detector (scikit-image).
 
@@ -215,9 +230,12 @@ class DotCalibration:
         if image is None or image.size == 0:
             raise ValueError(f"Invalid image for LoG blob detection: {image_path}")
 
-        blobs = feature.blob_log(image, max_sigma=max_sigma, num_sigma=num_sigma, threshold=threshold)
+        blobs = feature.blob_log(image, max_sigma=max_sigma, num_sigma=num_sigma, min_sigma=min_sigma, threshold=threshold)
         blobs[:, 2] = blobs[:, 2] * (2 ** 0.5)  # convert sigma to radius
-        image_out = self.add_gaussian_to_detected_blob(image, blobs)
+        if add_synthetic_gaussian == True:
+            image_out = self.add_gaussian_to_detected_blob(image, blobs)
+        else:
+            image_out = image
 
         if visualize:
             fig, ax = plt.subplots()
