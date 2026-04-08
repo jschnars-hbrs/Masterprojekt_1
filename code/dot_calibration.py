@@ -668,8 +668,8 @@ class DotCalibration:
 
         A small ε indicates agreement between iToF and triangulation (MPI-free).
         """
-        if Z_tof <= 1e-9 or Z_tri <= 1e-9:
-            return np.inf
+        if Z_tof <= 1e-12 or Z_tri <= 1e-12:
+            return 999999
         return abs(1.0 / Z_tof - 1.0 / Z_tri)
     
 
