@@ -30,7 +30,12 @@ from dot_calibration import DotCalibration
 
 CONNECT_DOTS = True  # True: connect dots with lines in depth comparison plots
 
-Schmersal = False
+Schmersal = True
+
+Synthetic_Gaussian = False
+
+Error_Distribution = True
+GT_DISTANCE = 4.0  # Ground-truth distance in meters
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Helpers
@@ -118,11 +123,11 @@ def common_setup(dotCal, cal, sl_path, tof_path):
 
     if Schmersal:
         blobs_test, sl_gray = dotCal.detect_blobs(
-            sl_path, max_sigma=10, num_sigma=15, min_sigma=10, threshold=0.01,add_synthetic_gaussian=False, visualize=False
+            sl_path, max_sigma=10, num_sigma=15, min_sigma=10, threshold=0.01,add_synthetic_gaussian=Synthetic_Gaussian, visualize=False
             )
     else:
         blobs_test, sl_gray = dotCal.detect_blobs(
-            sl_path, max_sigma=20, num_sigma=30, min_sigma=20, threshold=0.01,add_synthetic_gaussian=False, visualize=False
+            sl_path, max_sigma=20, num_sigma=30, min_sigma=20, threshold=0.01,add_synthetic_gaussian=Synthetic_Gaussian, visualize=False
             )
 
 
@@ -288,6 +293,29 @@ def run_approach_1(dotCal, cal, setup, save):
         plt.grid(alpha=0.3); plt.tight_layout()
         figures["approach1_eps_histogram"] = fig_eh
 
+    # Error distribution CSV
+    if Error_Distribution and save:
+        import csv
+        from collections import Counter
+        z_out_arr = np.array([r["Z_out"] for r in results])
+        valid_a1 = np.isfinite(z_out_arr) & (z_out_arr > 1e-6)
+        error_cm_raw = (z_out_arr[valid_a1] - GT_DISTANCE) * 100.0
+        error_cm_rounded = np.round(error_cm_raw / 0.5) * 0.5
+        counts = Counter(error_cm_rounded)
+
+        output_dir = setup.get("_output_dir")
+        if output_dir is not None:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            csv_path = output_dir / "approach1_error_distribution.csv"
+            with open(csv_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["error_cm", "count"])
+                for err in sorted(counts):
+                    writer.writerow([f"{err:.1f}", counts[err]])
+            print(f"\nError distribution saved to {csv_path}")
+            print(f"  Mean error: {error_cm_raw.mean():.2f} cm  Std: {error_cm_raw.std():.2f} cm"
+                  f"  Min: {error_cm_raw.min():.2f} cm  Max: {error_cm_raw.max():.2f} cm")
+
     return {"results": results, "figures": figures}
 
 
@@ -417,6 +445,27 @@ def run_approach_2(dotCal, cal, setup, save):
     for k in range(len(test_uv)):
         print(f"  dot {k:3d}  i*={i_best_ml[k]:3d}  "
               f"Z_tof={test_ztof[k]:.4f}  Z_sl={z_sl[k]:.4f}  Z_fus={z_fus[k]:.4f}")
+
+    # Error distribution CSV
+    if Error_Distribution and save:
+        import csv
+        from collections import Counter
+        error_cm_raw = (z_fus[valid] - GT_DISTANCE) * 100.0
+        error_cm_rounded = np.round(error_cm_raw / 0.5) * 0.5
+        counts = Counter(error_cm_rounded)
+
+        output_dir = setup.get("_output_dir")
+        if output_dir is not None:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            csv_path = output_dir / "approach2_error_distribution.csv"
+            with open(csv_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["error_cm", "count"])
+                for err in sorted(counts):
+                    writer.writerow([f"{err:.4f}", counts[err]])
+            print(f"\nError distribution saved to {csv_path}")
+            print(f"  Mean error: {error_cm_raw.mean():.2f} cm  Std: {error_cm_raw.std():.2f} cm"
+                  f"  Min: {error_cm_raw.min():.2f} cm  Max: {error_cm_raw.max():.2f} cm")
 
     figures = {}
     if save:
@@ -548,7 +597,7 @@ def run_approach_3(dotCal, cal, setup, save):
         row_max = np.max(row_signal)
         if row_max < 1e-12:
             continue
-        pks, _ = scipy.signal.find_peaks(row_signal, prominence=0.001 * row_max, distance=40,height=0.3)
+        pks, _ = scipy.signal.find_peaks(row_signal, prominence=0.001 * row_max, distance=40,height=0.1)
         if len(pks) > 0:
             row_peaks[int(row)] = pks
 
@@ -562,6 +611,7 @@ def run_approach_3(dotCal, cal, setup, save):
             enumerate(trail_trees),
             key=lambda t: t[1].query([uu, vv], k=1)[0]
         )
+        #best_i = 80
 
         row_grid = int(epipolar_rows_grid[dot_to_grid_row[best_i]])
         row_dot = int(epipolar_rows_dot[best_i])
@@ -903,11 +953,11 @@ def run_approach_4(dotCal, cal, setup, save):
 
     if Schmersal:
         blobs_test_4, sl_gray_4 = dotCal.detect_blobs(
-            sl_path, max_sigma=10, num_sigma=15, min_sigma=10, threshold=0.01,add_synthetic_gaussian=False, visualize=False
+            sl_path, max_sigma=10, num_sigma=15, min_sigma=10, threshold=0.01,add_synthetic_gaussian=Synthetic_Gaussian, visualize=False
             )
     else:
         blobs_test_4, sl_gray_4 = dotCal.detect_blobs(
-            sl_path, max_sigma=20, num_sigma=30, min_sigma=20, threshold=0.01,add_synthetic_gaussian=False, visualize=False
+            sl_path, max_sigma=20, num_sigma=30, min_sigma=20, threshold=0.01,add_synthetic_gaussian=Synthetic_Gaussian, visualize=False
             )
 
     _, subpix_test_4 = dotCal.detect_subpixel_locations(
@@ -1189,6 +1239,8 @@ def main():
         setup = {}
     setup["_sl_path"] = args.sl
     setup["_tof_path"] = args.tof
+    if args.save:
+        setup["_output_dir"] = Path(__file__).resolve().parent.parent / "Results" / args.name
 
     runners = {
         1: run_approach_1,
