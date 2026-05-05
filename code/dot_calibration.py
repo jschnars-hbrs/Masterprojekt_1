@@ -24,7 +24,7 @@ class DotCalibration:
       - Agresti & Zanuttigh, ECCV 2018: maximum likelihood depth fusion
     """
 
-    SL_CHANNEL = "S0.940,000nm"  # EXR channel to use for structured-light images
+    SL_CHANNEL = "S0.940,000nm"  # EXR channel to use for structured-light images (not visible in RGB Channel, due to IR-Light)
 
     # ─────────────────────────────────────────────────────────────────────────
     # File utilities
@@ -412,6 +412,226 @@ class DotCalibration:
         return patches, subpixels
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Calibration Steps 2b – Variable-count subpixel + cross-distance tracker
+    # (FL_C / Microsoft-Paper §4.1: "all the dots are transformed", "each dot
+    #  is tracked across multiple distances using the nearest-neighbor search
+    #  method"). No fixed grid is required.
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def detect_subpixel_locations_no_grid(self, all_blobs: np.ndarray, image: np.ndarray,
+                                          mode: str = "GPR") \
+            -> Tuple[List[np.ndarray], List[dict]]:
+        """
+        Refine blob positions to subpixel accuracy without enforcing a fixed grid.
+
+        Same subpixel refinement as `detect_subpixel_locations` but:
+          - No `grid_cols` / `n % grid_cols` check.
+          - No ID assignment — IDs come later from `track_dots_across_distances`.
+
+        Returns
+        -------
+        patches    : list of image patches, one per detected blob (input order)
+        subpixels  : list of dicts {x, y} (no IDs yet), in input order
+        """
+        H, W = image.shape[:2]
+        blobs = np.asarray(all_blobs, dtype=float)
+        patches, subpixels = [], []
+
+        for blob in blobs:
+            y_c, x_c = int(blob[0]), int(blob[1])
+            r = int(np.ceil(blob[2]))
+            y0, y1 = max(0, y_c - r), min(H, y_c + r + 1)
+            x0, x1 = max(0, x_c - r), min(W, x_c + r + 1)
+            patch = image[y0:y1, x0:x1]
+
+            if mode == "GPR":
+                x_sub, y_sub = self._gpr_peak(patch)
+            elif mode == "center":
+                x_sub = float(patch.shape[1]) / 2.0
+                y_sub = float(patch.shape[0]) / 2.0
+            elif mode == "geometricCenter":
+                x_sub, y_sub = self._geometric_centroid(patch)
+            elif mode == "radial":
+                x_sub, y_sub = self._radial_symmetry_center(patch)
+            else:
+                raise ValueError(f"Unknown subpixel mode: {mode}")
+
+            patches.append(patch)
+            subpixels.append({"x": float(x0 + x_sub), "y": float(y0 + y_sub)})
+
+        return patches, subpixels
+
+    @staticmethod
+    def track_dots_across_distances(subpixel_list_unordered: List[List[dict]],
+                                    ref_idx: int = 0,
+                                    threshold_factor: float = 0.5) \
+            -> List[List[dict]]:
+        """
+        Assign stable IDs to dots by tracking them across calibration distances
+        with a 2-D pixel-space nearest-neighbor search.
+
+        Algorithm (FL_C / Microsoft-Paper §4.1):
+          1. Seed IDs at distance index `ref_idx` (default 0 = closest), ordered
+             top-left → bottom-right in image space.
+          2. Walk outward (forward and backward in the distance list). For each
+             step, greedy-match each detection at the new distance to the closest
+             already-IDed dot at the previous distance via cKDTree.
+          3. Threshold per step: `threshold_factor × median(nearest-neighbor
+             spacing)` of detections at the new distance — adaptive across
+             sensor resolutions.
+          4. Unmatched detections become NEW IDs (handles dots entering FOV at
+             greater distances).
+          5. IDed dots that aren't matched at the new distance are absent there
+             (NaN downstream).
+
+        Parameters
+        ----------
+        subpixel_list_unordered : list (one entry per distance) of dicts {x, y}
+            As returned by `detect_subpixel_locations_no_grid`.
+        ref_idx          : seed distance index (default 0).
+        threshold_factor : multiplier on median NN spacing (default 0.5).
+
+        Returns
+        -------
+        subpixel_list : list (one entry per distance) of dicts {id, x, y}.
+            IDs are stable across distances; counts may differ per distance;
+            roster size = max(id) + 1.
+        """
+        n_dist = len(subpixel_list_unordered)
+        if n_dist == 0:
+            return []
+
+        out: List[List[dict]] = [[] for _ in range(n_dist)]
+
+        # ── Step 1: seed roster from ref_idx, ordered top-left → bottom-right
+        seed = subpixel_list_unordered[ref_idx]
+        ordered_seed = sorted(seed, key=lambda d: (d["y"], d["x"]))
+        for i, d in enumerate(ordered_seed):
+            out[ref_idx].append({"id": i, "x": float(d["x"]), "y": float(d["y"])})
+
+        next_id = len(ordered_seed)
+
+        def _median_nn(pts_xy: np.ndarray) -> float:
+            if pts_xy.shape[0] < 2:
+                return np.inf
+            tree = cKDTree(pts_xy)
+            dists, _ = tree.query(pts_xy, k=2)  # k=1 is self
+            return float(np.median(dists[:, 1]))
+
+        def _step(prev_idx: int, new_idx: int, next_id: int) -> int:
+            """Match detections at new_idx to IDed dots at prev_idx."""
+            prev_ided = out[prev_idx]
+            new_dets = subpixel_list_unordered[new_idx]
+            if len(prev_ided) == 0 or len(new_dets) == 0:
+                # Nothing to match against — register everything as new IDs.
+                for d in new_dets:
+                    out[new_idx].append({"id": next_id, "x": float(d["x"]),
+                                         "y": float(d["y"])})
+                    next_id += 1
+                return next_id
+
+            prev_xy = np.array([[d["x"], d["y"]] for d in prev_ided], float)
+            new_xy = np.array([[d["x"], d["y"]] for d in new_dets], float)
+
+            thresh = threshold_factor * _median_nn(new_xy)
+            if not np.isfinite(thresh):
+                thresh = np.inf
+
+            # Greedy assignment: sort all (new, prev) pairs by distance.
+            tree = cKDTree(prev_xy)
+            # k = min(3, len(prev_xy)) candidates per detection.
+            k = min(3, len(prev_xy))
+            dists, idxs = tree.query(new_xy, k=k)
+            if k == 1:
+                dists = dists[:, None]
+                idxs = idxs[:, None]
+
+            pairs = []
+            for n_i in range(len(new_dets)):
+                for c in range(k):
+                    pairs.append((dists[n_i, c], n_i, int(idxs[n_i, c])))
+            pairs.sort(key=lambda t: t[0])
+
+            new_to_prev = -np.ones(len(new_dets), dtype=int)
+            prev_taken = np.zeros(len(prev_ided), dtype=bool)
+            for dist, n_i, p_i in pairs:
+                if dist > thresh:
+                    break
+                if new_to_prev[n_i] >= 0 or prev_taken[p_i]:
+                    continue
+                new_to_prev[n_i] = p_i
+                prev_taken[p_i] = True
+
+            for n_i, d in enumerate(new_dets):
+                if new_to_prev[n_i] >= 0:
+                    dot_id = prev_ided[new_to_prev[n_i]]["id"]
+                else:
+                    dot_id = next_id
+                    next_id += 1
+                out[new_idx].append({"id": dot_id, "x": float(d["x"]),
+                                     "y": float(d["y"])})
+            return next_id
+
+        # ── Step 2: walk forward from ref_idx
+        for j in range(ref_idx + 1, n_dist):
+            next_id = _step(j - 1, j, next_id)
+
+        # ── Step 3: walk backward from ref_idx (only meaningful if ref_idx>0)
+        for j in range(ref_idx - 1, -1, -1):
+            next_id = _step(j + 1, j, next_id)
+
+        # ── Step 4: renumber so IDs are top-left → bottom-right globally.
+        # Pure (y, x) lexsort interleaves rows when dots within a row have
+        # small y-jitter. Instead: cluster rows from y-gaps relative to the
+        # median nearest-neighbor spacing, then sort each row by x.
+        roster_size = next_id
+        sums = np.zeros((roster_size, 2), dtype=float)
+        counts = np.zeros(roster_size, dtype=int)
+        for spx in out:
+            for d in spx:
+                i = int(d["id"])
+                sums[i, 0] += d["x"]
+                sums[i, 1] += d["y"]
+                counts[i] += 1
+        means = sums / np.maximum(counts, 1)[:, None]
+
+        if roster_size >= 2:
+            grid_spacing = float(np.median(
+                cKDTree(means).query(means, k=2)[0][:, 1]
+            ))
+        else:
+            grid_spacing = 1.0
+        row_gap_thresh = 0.5 * grid_spacing
+
+        order_by_y = np.argsort(means[:, 1], kind="stable")
+        rows: List[List[int]] = []
+        current: List[int] = []
+        prev_y = None
+        for old_id in order_by_y:
+            y = means[old_id, 1]
+            if prev_y is not None and (y - prev_y) > row_gap_thresh:
+                rows.append(current)
+                current = []
+            current.append(int(old_id))
+            prev_y = y
+        if current:
+            rows.append(current)
+
+        old_to_new = np.empty(roster_size, dtype=int)
+        new_id = 0
+        for row in rows:
+            for old_id in sorted(row, key=lambda i: means[i, 0]):
+                old_to_new[old_id] = new_id
+                new_id += 1
+
+        for spx in out:
+            for d in spx:
+                d["id"] = int(old_to_new[int(d["id"])])
+            spx.sort(key=lambda d: d["id"])
+
+        return out
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Calibration Step 3 – 3-D back-projection
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -446,7 +666,12 @@ class DotCalibration:
                           [  0.0, -362.6, 240.0],
                           [  0.0,    0.0,   1.0]])
 
-        n_dots = len(subpixel_list[0])
+        # Derive roster size from the maximum dot ID across all distances so
+        # the array fits even when per-distance counts vary (FL_C tracking).
+        all_ids = [int(d["id"]) for spx in subpixel_list for d in spx]
+        if not all_ids:
+            raise ValueError("subpixel_list contains no IDed dots.")
+        n_dots = max(all_ids) + 1
         n_dist = len(subpixel_list)
         U = np.full((n_dots, n_dist, 3), np.nan, dtype=np.float64)
 
@@ -676,7 +901,7 @@ class DotCalibration:
 
     @staticmethod
     def build_calibration_trails(subpixel_list: List[List[dict]],
-                                  n_dots: int = 100) -> np.ndarray:
+                                  n_dots: Optional[int] = None) -> np.ndarray:
         """
         Build a (n_dist, n_dots, 2) array of pixel-space calibration trails.
 
@@ -686,9 +911,13 @@ class DotCalibration:
         Parameters
         ----------
         subpixel_list : list (one entry per distance) of subpixel dicts {id, x, y}
-        n_dots        : total number of dots (e.g. 100 for a 10×10 grid)
+        n_dots        : total number of dots. If None, derived from
+                        max(id) + 1 across all distances.
         """
-        n_dist   = len(subpixel_list)
+        n_dist = len(subpixel_list)
+        if n_dots is None:
+            all_ids = [int(d["id"]) for spx in subpixel_list for d in spx]
+            n_dots = (max(all_ids) + 1) if all_ids else 0
         trail_xy = np.full((n_dist, n_dots, 2), np.nan, dtype=float)
 
         for j, spx in enumerate(subpixel_list):

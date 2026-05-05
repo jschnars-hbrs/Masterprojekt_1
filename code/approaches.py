@@ -12,6 +12,7 @@ Usage examples:
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -30,12 +31,28 @@ from dot_calibration import DotCalibration
 
 CONNECT_DOTS = True  # True: connect dots with lines in depth comparison plots
 
-Schmersal = True
+Schmersal = False    # Use Schmersal calibration if True, else OnSemi
 
-Synthetic_Gaussian = False
+Synthetic_Gaussian = False  # Adds synthetic Gaussian at detected blob for GPR
 
-Error_Distribution = True
-GT_DISTANCE = 4.0  # Ground-truth distance in meters
+Error_Distribution = False  # Adds error distribution CSV output (requires GT_DISTANCE to be set)
+
+Average_Error = True # Adds average error printout to console (requires GT_DISTANCE to be set)
+
+GT_DISTANCE = None  # Set automatically from SL filename (e.g. "SL_Flat_Wall_1.0m_On.exr" → 1.0)
+
+
+def _parse_gt_distance(sl_path):
+    """Extract ground-truth distance in meters from the SL filename.
+
+    Looks for a pattern like '_1.0m_' or '_0.75m_' or '_4.0m.' in the filename.
+    Returns the distance as float, or None if not found.
+    """
+    stem = Path(sl_path).stem  # e.g. "SL_Flat_Wall_1.0m_On"
+    m = re.search(r"_(\d+\.?\d*)m(?:_|$)", stem)
+    if m:
+        return float(m.group(1))
+    return None
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Helpers
@@ -112,7 +129,7 @@ def common_setup(dotCal, cal, sl_path, tof_path):
     K_inv = cal["K_inv"]
     subpixel_list = cal["subpixel_list"]
 
-    PCD_SCALE = cal.get("metadata", {}).get("pcd_unit_scale", 0.001)
+    PCD_SCALE = cal.get("metadata", {}).get("pcd_unit_scale", 0.001) #mm
 
     trail_xy = dotCal.build_calibration_trails(subpixel_list)
 
@@ -121,7 +138,7 @@ def common_setup(dotCal, cal, sl_path, tof_path):
     points_map = tof_test["points_3d"].reshape(depth_map.shape[0], depth_map.shape[1], 3)
     H, W = depth_map.shape
 
-    if Schmersal:
+    if Schmersal:   # different blob detection parameters for Schmersal calibration (more dots, less noise)
         blobs_test, sl_gray = dotCal.detect_blobs(
             sl_path, max_sigma=10, num_sigma=15, min_sigma=10, threshold=0.01,add_synthetic_gaussian=Synthetic_Gaussian, visualize=False
             )
@@ -132,7 +149,8 @@ def common_setup(dotCal, cal, sl_path, tof_path):
 
 
 
-    _, subpix_test = dotCal.detect_subpixel_locations(
+    # Microsoft-Paper: no fixed grid expected at test time either.
+    _, subpix_test = dotCal.detect_subpixel_locations_no_grid(
         blobs_test, sl_gray, mode="geometricCenter"
     )
     test_uv = np.array([[d["x"], d["y"]] for d in subpix_test], dtype=float)
@@ -254,15 +272,18 @@ def run_approach_1(dotCal, cal, setup, save):
             plt.tight_layout()
             figures[f"approach1_eps_curve_{label.replace(' ', '_')}"] = fig
 
-        # Depth comparison
+        # Depth comparison — sort by calibration ID i_best so the x-axis
+        # matches calibration IDs (LoG detection order is no longer fixed).
         _ls = ".-" if CONNECT_DOTS else "."
+        results_sorted = sorted(results, key=lambda r: r["i_best"])
+        x_i = [r["i_best"] for r in results_sorted]
         fig_dc = plt.figure(figsize=(8, 4))
-        plt.plot([r["k"] for r in results], [r["Z_raw"] for r in results],
+        plt.plot(x_i, [r["Z_raw"] for r in results_sorted],
                  _ls, markersize=5, label="Z_ToF (raw @ detected dot)")
-        plt.plot([r["k"] for r in results], [r["Z_out"] for r in results],
+        plt.plot(x_i, [r["Z_out"] for r in results_sorted],
                  _ls, markersize=5, label="Z_out (ToF @ min-ε trail sample)")
         plt.title("Approach 1 – Consistency error: raw ToF vs selected depth")
-        plt.xlabel("Dot index k"); plt.ylabel("Depth [m]")
+        plt.xlabel("Calibrated ray index i*"); plt.ylabel("Depth [m]")
         plt.legend(bbox_to_anchor=(0.5, -0.18), loc="upper center", borderaxespad=0, ncol=2); plt.grid(alpha=0.3)
         plt.tight_layout(); plt.subplots_adjust(bottom=0.22)
         figures["approach1_depth_comparison"] = fig_dc
@@ -316,7 +337,8 @@ def run_approach_1(dotCal, cal, setup, save):
             print(f"  Mean error: {error_cm_raw.mean():.2f} cm  Std: {error_cm_raw.std():.2f} cm"
                   f"  Min: {error_cm_raw.min():.2f} cm  Max: {error_cm_raw.max():.2f} cm")
 
-    return {"results": results, "figures": figures}
+    z_out_arr = np.array([r["Z_out"] for r in results])
+    return {"results": results, "figures": figures, "depths": z_out_arr}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -539,7 +561,7 @@ def run_approach_2(dotCal, cal, setup, save):
             plt.xlim([zmin_p, zmax_p]); plt.tight_layout()
             figures["approach2_likelihood_example"] = fig_ll
 
-    return {"figures": figures}
+    return {"figures": figures, "depths": z_fus}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -560,17 +582,10 @@ def run_approach_3(dotCal, cal, setup, save):
     EPS_THRESHOLD_AB = None
     USE_FALLBACK = False
     HALF_WIN = 10
-    GRID_COLS = 10
 
-    n_grid_rows = trail_xy.shape[1] // GRID_COLS
-    epipolar_rows_grid = np.empty(n_grid_rows, dtype=int)
-    for gr in range(n_grid_rows):
-        dot_indices = range(gr * GRID_COLS, (gr + 1) * GRID_COLS)
-        v_coords = trail_xy[:, dot_indices, 1]
-        epipolar_rows_grid[gr] = int(round(np.nanmean(v_coords)))
-    epipolar_rows_grid = np.clip(epipolar_rows_grid, 0, H - 1)
-    dot_to_grid_row = np.array([i // GRID_COLS for i in range(trail_xy.shape[1])], dtype=int)
-
+    # Per-dot epipolar row = mean v of that dot's calibration trail.
+    # FL_C / Microsoft-Paper §4.2: scan along the dot's epipolar line.
+    # No fixed grid is assumed — works for any roster size.
     epipolar_rows_dot = np.empty(trail_xy.shape[1], dtype=int)
     for i in range(trail_xy.shape[1]):
         epipolar_rows_dot[i] = int(round(np.nanmean(trail_xy[:, i, 1])))
@@ -585,12 +600,7 @@ def run_approach_3(dotCal, cal, setup, save):
         print(f"  ⚠ {np.sum(v_ranges >= 1.0)} dot(s) exceed 1 px v-range — "
               f"horizontal assumption may be inaccurate for those dots.")
 
-    row_deltas = np.abs(epipolar_rows_dot - epipolar_rows_grid[dot_to_grid_row])
-    print(f"Per-dot vs grid-row row delta (px):  mean={np.mean(row_deltas):.3f}  "
-          f"max={np.max(row_deltas):.3f}  >=0.5px={np.sum(row_deltas >= 0.5)}  "
-          f">=1px={np.sum(row_deltas >= 1.0)}")
-
-    rows_to_scan = np.unique(np.concatenate([epipolar_rows_grid, epipolar_rows_dot]))
+    rows_to_scan = np.unique(epipolar_rows_dot)
     row_peaks = {}
     for row in rows_to_scan:
         row_signal = sl_gray[row, :]
@@ -601,7 +611,6 @@ def run_approach_3(dotCal, cal, setup, save):
         if len(pks) > 0:
             row_peaks[int(row)] = pks
 
-    print(f"Grid-row epipolar rows: {epipolar_rows_grid.tolist()}")
     print(f"Scanned {len(rows_to_scan)} unique rows — {len(row_peaks)} have brightness peaks, "
           f"total peaks: {sum(len(p) for p in row_peaks.values())}")
 
@@ -613,9 +622,7 @@ def run_approach_3(dotCal, cal, setup, save):
         )
         #best_i = 80
 
-        row_grid = int(epipolar_rows_grid[dot_to_grid_row[best_i]])
-        row_dot = int(epipolar_rows_dot[best_i])
-        row = row_dot
+        row = int(epipolar_rows_dot[best_i])
         row_signal = sl_gray[row, :]
         peaks_on_row = row_peaks.get(row, np.array([], dtype=int))
 
@@ -698,8 +705,7 @@ def run_approach_3(dotCal, cal, setup, save):
 
         results_ab.append(dict(
             k=k, u=float(uu), v=float(vv),
-            u_plot=float(u_sub), v_plot=float(row), row=row, row_grid=row_grid, row_dot=row_dot,
-            row_delta=float(abs(row_dot - row_grid)),
+            u_plot=float(u_sub), v_plot=float(row), row=row,
             Z_raw=Z_raw, Z_tri=float(Z_tri_out),
             i_best=best_i, u_best=u_best, u_sub=u_sub,
             eps_best=eps_best, peak_snr=peak_snr,
@@ -778,13 +784,15 @@ def run_approach_3(dotCal, cal, setup, save):
             figures[f"approach3_trail_{label.replace(' ', '_')}"] = fig
 
         _ls = ".-" if CONNECT_DOTS else "."
+        results_ab_sorted = sorted(results_ab, key=lambda r: r["i_best"])
+        x_i = [r["i_best"] for r in results_ab_sorted]
         fig_dc = plt.figure(figsize=(8, 4))
-        plt.plot([r["k"] for r in results_ab], [r["Z_raw"] for r in results_ab],
+        plt.plot(x_i, [r["Z_raw"] for r in results_ab_sorted],
                  _ls, markersize=5, label="Z_ToF (raw @ detected dot)")
-        plt.plot([r["k"] for r in results_ab], [r["Z_tri"] for r in results_ab],
+        plt.plot(x_i, [r["Z_tri"] for r in results_ab_sorted],
                  _ls, markersize=5, label="Z_tri (Approach 3)")
         plt.title("Approach 3 – Active Brightness (epipolar scan): raw ToF vs triangulation depth")
-        plt.xlabel("Dot index k"); plt.ylabel("Depth [m]")
+        plt.xlabel("Calibrated ray index i*"); plt.ylabel("Depth [m]")
         plt.legend(bbox_to_anchor=(0.5, -0.18), loc="upper center", borderaxespad=0, ncol=2)
         plt.grid(alpha=0.3)
         plt.tight_layout(); plt.subplots_adjust(bottom=0.22)
@@ -826,7 +834,8 @@ def run_approach_3(dotCal, cal, setup, save):
         plt.grid(alpha=0.3); plt.tight_layout()
         figures["approach3_eps_histogram"] = fig_eh
 
-    return {"figures": figures}
+    z_tri_arr = np.array([r["Z_tri"] for r in results_ab])
+    return {"figures": figures, "depths": z_tri_arr}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -960,7 +969,7 @@ def run_approach_4(dotCal, cal, setup, save):
             sl_path, max_sigma=20, num_sigma=30, min_sigma=20, threshold=0.01,add_synthetic_gaussian=Synthetic_Gaussian, visualize=False
             )
 
-    _, subpix_test_4 = dotCal.detect_subpixel_locations(
+    _, subpix_test_4 = dotCal.detect_subpixel_locations_no_grid(
         blobs_test_4, sl_gray_4, mode="geometricCenter"
     )
     test_uv_4 = np.array([[d["x"], d["y"]] for d in subpix_test_4], dtype=float)
@@ -1111,10 +1120,12 @@ def run_approach_4(dotCal, cal, setup, save):
 
         # Depth comparison (optionally with error bands)
         _ls = ".-" if CONNECT_DOTS else "."
+        results_4_sorted = sorted(results_4, key=lambda r: r["i_best"])
+        x_i = [r["i_best"] for r in results_4_sorted]
         fig_dc4 = plt.figure(figsize=(8, 4))
-        plt.plot([r["k"] for r in results_4], [r["Z_raw"] for r in results_4],
+        plt.plot(x_i, [r["Z_raw"] for r in results_4_sorted],
                  _ls, markersize=5, label="Z_ToF (raw @ detected dot)")
-        plt.plot([r["k"] for r in results_4], [r["Z_out"] for r in results_4],
+        plt.plot(x_i, [r["Z_out"] for r in results_4_sorted],
                  _ls, markersize=5, label="Z_tri (Approach 4 @ detected subpixel position)")
         if SHOW_REF_DISTANCES:
             ref_distances_4 = np.array([0.5, 1.0, 2.0, 3.5])
@@ -1129,7 +1140,7 @@ def run_approach_4(dotCal, cal, setup, save):
             plt.xlim(-1, len(results_4) + 8)
         plt.title(f"Approach 4 – raw ToF vs triangulated depth"
                   + (f"  (bands: δx = {dx_pixels:.3f} px)" if SHOW_REF_DISTANCES else ""))
-        plt.xlabel("Dot index k"); plt.ylabel("Depth [m]")
+        plt.xlabel("Calibrated ray index i*"); plt.ylabel("Depth [m]")
         plt.legend(bbox_to_anchor=(0.5, -0.18), loc="upper center", borderaxespad=0, ncol=2); plt.grid(alpha=0.3)
         plt.tight_layout(); plt.subplots_adjust(bottom=0.22)
         figures["approach4_depth_comparison"] = fig_dc4
@@ -1180,7 +1191,8 @@ def run_approach_4(dotCal, cal, setup, save):
         plt.grid(alpha=0.3); plt.tight_layout()
         figures["approach4_eps_histogram"] = fig_eh4
 
-    return {"figures": figures}
+    z_out_arr_4 = np.array([r["Z_out"] for r in results_4])
+    return {"figures": figures, "depths": z_out_arr_4}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1209,11 +1221,21 @@ def parse_args():
 
 
 def main():
+    global GT_DISTANCE
     args = parse_args()
 
     if args.save and not args.name:
         print("Error: --name is required when --save is set.", file=sys.stderr)
         sys.exit(1)
+
+    # Auto-extract ground-truth distance from SL filename
+    gt = _parse_gt_distance(args.sl)
+    if gt is not None:
+        GT_DISTANCE = gt
+        print(f"Ground-truth distance from filename: {GT_DISTANCE} m")
+    else:
+        print("Warning: could not extract ground-truth distance from SL filename. "
+              "Average error will not be computed.", file=sys.stderr)
 
     if args.save:
         import matplotlib
@@ -1258,6 +1280,33 @@ def main():
         print(f"{'=' * 60}\n")
         result = runners[num](dotCal, cal, setup, args.save)
         all_figures.update(result.get("figures", {}))
+
+        # Print average error when enabled and GT is known
+        if Average_Error and GT_DISTANCE is not None:
+            depths = result.get("depths")
+            if depths is not None:
+                valid = np.isfinite(depths) & (depths > 1e-6)
+                if np.any(valid):
+                    error_m = depths[valid] - GT_DISTANCE
+                    mean_err = np.mean(error_m)
+                    abs_mean = np.mean(np.abs(error_m))
+                    std_err = np.std(error_m)
+                    min_err = np.min(error_m)
+                    max_err = np.max(error_m)
+                    n_valid = int(np.sum(valid))
+                    n_total = len(depths)
+                    print(f"\n  ** Approach {num} — Average Error **")
+                    print(f"     GT distance:  {GT_DISTANCE:.4f} m")
+                    print(f"     Valid dots:   {n_valid} / {n_total}")
+                    print(f"     Mean error:   {mean_err:+.4f} m")
+                    print(f"     Mean |error|: {abs_mean:.4f} m")
+                    print(f"     Std error:    {std_err:.4f} m")
+                    print(f"     Min error:    {min_err:+.4f} m")
+                    print(f"     Max error:    {max_err:+.4f} m")
+                    # Machine-readable line for run_all.py
+                    print(f"AVG_ERR|{num}|{GT_DISTANCE:.4f}|{n_valid}|{n_total}"
+                          f"|{mean_err:.6f}|{abs_mean:.6f}|{std_err:.6f}"
+                          f"|{min_err:.6f}|{max_err:.6f}")
 
     if args.save and all_figures:
         output_dir = Path(__file__).resolve().parent.parent / "Results" / args.name
